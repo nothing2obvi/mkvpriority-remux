@@ -3,21 +3,25 @@
   <img alt="MKVPriority Banner" src="images/mkvpriority_banner.svg" width="600">
 </div>
 <p align="center">
-<img src="https://github.com/kennethsible/mkvpriority/actions/workflows/publish.yaml/badge.svg" alt="Docker Release" />
-<img src="https://github.com/kennethsible/mkvpriority/actions/workflows/pypi.yaml/badge.svg" alt="PyPI Release" />
-<img src="https://github.com/kennethsible/mkvpriority/actions/workflows/pytest.yaml/badge.svg" alt="Python CI">
+<img src="https://github.com/nothing2obvi/mkvpriority-remux/actions/workflows/publish.yaml/badge.svg" alt="Docker Release" />
+<img src="https://github.com/nothing2obvi/mkvpriority-remux/actions/workflows/pypi.yaml/badge.svg" alt="PyPI Release" />
+<img src="https://github.com/nothing2obvi/mkvpriority-remux/actions/workflows/pytest.yaml/badge.svg" alt="Python CI">
 </p>
 
 **MKVPriority** assigns configurable priority scores to audio and subtitle tracks, similar to custom formats in Radarr/Sonarr. MKV flags, such as default and forced, are automatically set for the highest-priority tracks (e.g., 5.1 surround and ASS subtitles), while lower-priority tracks (e.g., stereo audio and PGS subtitles) are deprioritized.
 
+This repository is a fork of [kennethsible/mkvpriority](https://github.com/kennethsible/mkvpriority) that keeps the upstream track-priority behavior and adds optional remux-focused workflows.
+
 > [!IMPORTANT]
-> MKVPriority modifies track flags in place using `mkvpropedit` (**no remuxing**), allowing media players to automatically select the best audio and subtitle tracks according to your preferences.
+> MKVPriority modifies track flags in place using `mkvpropedit` by default (**no remuxing**), allowing media players to automatically select the best audio and subtitle tracks according to your preferences. Remuxing can optionally be enabled in the config to disable track compression or reorder tracks.
 
 ## Features
 
 - Assigns **configurable priority scores** to audio and subtitle tracks (similar to **custom formats** in Radarr/Sonarr)
 - Automatically sets **default/forced flags** for the highest priority tracks (e.g., Japanese audio and ASS subtitles)
 - Deprioritizes **unwanted audio and subtitle tracks** (e.g., English dubs, commentary tracks, signs/songs)
+- Optionally remuxes changed files with `mkvmerge --compression -1:none` to disable track compression
+- Optionally remuxes files to place video tracks first, then audio/subtitle tracks by score
 - Periodically scans your media library using a **cron schedule** and processes new MKV files with a database
 - Integrates with Radarr and Sonarr using a **custom script** to process new MKV files as they are imported
 - Supports extension modules for optional, user-defined **post-processors**, allowing for edge-case handling
@@ -27,7 +31,7 @@
 A Docker image is provided to simplify the installation process and enable quick deployment.
 
 ```bash
-docker run --rm -v /path/to/media:/media ghcr.io/kennethsible/mkvpriority /media
+docker run --rm -v /path/to/media:/media ghcr.io/nothing2obvi/mkvpriority-remux /media
 ```
 
 ### Use a Custom Config
@@ -38,7 +42,7 @@ You can specify your own preferences by creating a custom TOML config that defin
 docker run --rm -u ${PUID}:${PGID} \
   -v /path/to/media:/media \
   -v /path/to/mkvpriority/config:/config \
-  ghcr.io/kennethsible/mkvpriority /media \
+  ghcr.io/nothing2obvi/mkvpriority-remux /media \
   --config /config/custom.toml
 ```
 
@@ -53,13 +57,31 @@ You can periodically process your media library using a cron job and an archive 
 docker run --rm -u ${PUID}:${PGID} \
   -v /path/to/media:/media \
   -v /path/to/mkvpriority/config:/config \
-  ghcr.io/kennethsible/mkvpriority /media \
+  ghcr.io/nothing2obvi/mkvpriority-remux /media \
   --archive /config/archive.db
 ```
 
 ## TOML Configuration
 
-All behavior is configured through TOML files, which assign priority scores to track properties, such as languages and codecs, and define custom filters for track names, such as "signs" and "songs." To get started, check the example TOML file that has been provided for anime ([see here](https://github.com/kennethsible/mkvpriority/blob/main/config.toml)).
+All behavior is configured through TOML files, which assign priority scores to track properties, such as languages and codecs, and define custom filters for track names, such as "signs" and "songs." To get started, check the example TOML file that has been provided for anime ([see here](https://github.com/nothing2obvi/mkvpriority-remux/blob/main/config.toml)).
+
+### Remux Options
+
+You can enable optional remux steps that run after audio and subtitle flags are changed:
+
+```toml
+remux_disable_compression = true
+remux_reorder_tracks = true
+```
+
+When `remux_disable_compression` is enabled, MKVPriority rewrites the MKV with `mkvmerge --compression -1:none` after track flags are changed. This disables Matroska track compression, which can improve compatibility with clients that do not handle compressed tracks well.
+
+When `remux_reorder_tracks` is enabled, MKVPriority changes the track order according to calculated scores: video tracks stay first, audio tracks are ordered from highest score to lowest score, and subtitle tracks are ordered from highest score to lowest score. If the current track order already matches that score order, MKVPriority skips the reorder remux.
+
+If both options are enabled and both operations are needed, MKVPriority performs one shared `mkvmerge` remux instead of rewriting the file twice. The remux is written to a temporary file in the same directory, then replaces the original MKV only after `mkvmerge` succeeds. These remux steps do not run during `--restore`, and they are logged through the `mkvmerge` logger. In `--dry-run` mode, MKVPriority logs the command it would run without remuxing the file.
+
+> [!IMPORTANT]
+> These options rewrite and replace the MKV file, so they break hardlinks and require enough free disk space for a temporary copy of the file.
 
 ### Example: Subtitle Codecs
 
@@ -82,8 +104,8 @@ You can process new MKV files as they are imported into Radarr/Sonarr by adding 
 
 ```yaml
 mkvpriority:
-  image: ghcr.io/kennethsible/mkvpriority
-  container_name: mkvpriority
+  image: ghcr.io/nothing2obvi/mkvpriority-remux
+  container_name: mkvpriority-remux
   user: ${PUID}:${PGID}
   environment:
     WEBHOOK_PORT: '8080'
@@ -105,8 +127,8 @@ MKVPriority supports multiple, tag-based configs that can be customized to match
 
 ```yaml
 mkvpriority:
-  image: ghcr.io/kennethsible/mkvpriority
-  container_name: mkvpriority
+  image: ghcr.io/nothing2obvi/mkvpriority-remux
+  container_name: mkvpriority-remux
   user: ${PUID}:${PGID}
   environment:
     WEBHOOK_PORT: '8080'
@@ -128,8 +150,8 @@ You can use the built-in cron scheduler to periodically scan your media library 
 
 ```yaml
 mkvpriority:
-  image: ghcr.io/kennethsible/mkvpriority
-  container_name: mkvpriority
+  image: ghcr.io/nothing2obvi/mkvpriority-remux
+  container_name: mkvpriority-remux
   user: ${PUID}:${PGID}
   environment:
     TZ: "America/New_York"
@@ -175,7 +197,7 @@ Shadow = 1.5
 
 ### Example: Multiplexer (Strip/Reorder Tracks)
 
-You can use the `multiplexer` extension to strip tracks for unwanted languages and reorder tracks by priority scores. Since remuxing conflicts with the core "no-remux" design, these features are delegated to an extension module. To enable them, add the `[multiplexer]` section to your config file and include this extension in your arguments.
+You can use the `multiplexer` extension to strip tracks for unwanted languages and reorder tracks by priority scores. To enable it, add the `[multiplexer]` section to your config file and include this extension in your arguments.
 
 ```toml
 [multiplexer]

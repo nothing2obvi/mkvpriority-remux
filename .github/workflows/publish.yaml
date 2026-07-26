@@ -21,7 +21,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ghcr.io/kennethsible/mkvpriority
+          images: ghcr.io/nothing2obvi/mkvpriority-remux
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}

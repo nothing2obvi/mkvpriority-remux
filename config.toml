@@ -22,6 +22,20 @@ subtitle_mode = ["default", "forced"]
 # Ensures subtitles in non-native languages are always stripped of flags.
 penalize_unscored_languages = false
 
+# === Remux Without Compression ===
+# Rewrites the MKV with mkvmerge after track flags are changed:
+# - true  = Runs `mkvmerge --compression -1:none` and replaces the original file
+# - false = Keeps the current no-remux behavior
+# This breaks hardlinks and requires enough free space for a temporary copy.
+remux_disable_compression = false
+
+# === Remux Track Order ===
+# Rewrites the MKV with mkvmerge if tracks are not ordered by score:
+# - true  = Moves video tracks first, then audio/subtitle tracks by score
+# - false = Keeps the current track order
+# This breaks hardlinks and requires enough free space for a temporary copy.
+remux_reorder_tracks = false
+
 # === Audio Language Preferences ===
 # Example: Prioritize Japanese subs over English dubs.
 [audio_languages]

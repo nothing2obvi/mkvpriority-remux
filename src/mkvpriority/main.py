@@ -18,7 +18,9 @@ from pathlib import Path
 from sqlite3 import Cursor
 from string.templatelib import Template
 from tempfile import NamedTemporaryFile
+from time import monotonic
 from typing import Any
+from uuid import uuid4
 
 mkvpriority_logger = logging.getLogger('mkvpriority')
 mkvpropedit_logger = logging.getLogger('mkvpropedit')
@@ -146,6 +148,8 @@ class Config:
     subtitle_codecs: dict[str, int]
     subtitle_filters: dict[str, int]
     penalize_unscored_languages: bool
+    remux_disable_compression: bool
+    remux_reorder_tracks: bool
 
     @classmethod
     def from_file(cls, toml_path: Path, label_tag: str = 'untagged') -> 'Config':
@@ -169,6 +173,8 @@ class Config:
             subtitle_codecs=toml_file.get('subtitle_codecs', {}),
             subtitle_filters=toml_file.get('subtitle_filters', {}),
             penalize_unscored_languages=toml_file.get('penalize_unscored_languages', False),
+            remux_disable_compression=toml_file.get('remux_disable_compression', False),
+            remux_reorder_tracks=toml_file.get('remux_reorder_tracks', False),
         )
 
 
@@ -356,6 +362,78 @@ def modify_tracks(arguments: list[str]) -> None:
         temp_file_path.unlink(missing_ok=True)
 
 
+def remux_file(
+    file_path: Path,
+    disable_compression: bool = False,
+    track_order: list[int] | None = None,
+    dry_run: bool = False,
+) -> None:
+    temp_path = file_path.with_name(f'.{file_path.name}.mkvpriority-{uuid4().hex}.tmp')
+    arguments = ['-o', str(temp_path)]
+    reasons: list[str] = []
+    if disable_compression:
+        arguments += ['--compression', '-1:none']
+        reasons.append('without compression')
+    if track_order:
+        arguments += ['--track-order', ','.join(f'0:{track_id}' for track_id in track_order)]
+        reasons.append('with reordered tracks')
+    arguments.append(str(file_path))
+
+    dry_run_prefix = '[DRY RUN] ' if dry_run else ''
+    remux_reason = ' and '.join(reasons) if reasons else 'without changes'
+    mkvmerge_logger.info(dry_run_prefix + f"remuxing {remux_reason} '{file_path}'")
+    mkvmerge_logger.debug(dry_run_prefix + 'mkvmerge ' + ' '.join(arguments))
+    if dry_run:
+        return
+
+    start_time = monotonic()
+    with NamedTemporaryFile('w+', encoding='utf-8', suffix='.json', delete=False) as temp_file:
+        json.dump(arguments, temp_file)
+        temp_file_path = Path(temp_file.name)
+
+    try:
+        result = subprocess.run(
+            ['mkvmerge', f'@{temp_file_path}'],
+            capture_output=True,
+            encoding='utf-8',
+            check=True,
+            text=True,
+        )
+        mkvmerge_logger.debug(result.stdout.strip())
+        temp_path.replace(file_path)
+        elapsed = monotonic() - start_time
+        mkvmerge_logger.info(f"finished remuxing '{file_path}' in {elapsed:.1f}s")
+    except subprocess.CalledProcessError as e:
+        mkvmerge_logger.error((e.stderr or e.stdout or str(e)).strip())
+        temp_path.unlink(missing_ok=True)
+        raise
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    finally:
+        temp_file_path.unlink(missing_ok=True)
+
+
+def get_track_order(
+    video_tracks: list[Track], audio_tracks: list[Track], subtitle_tracks: list[Track]
+) -> list[int] | None:
+    current_order = [
+        track.index
+        for track in sorted(
+            [*video_tracks, *audio_tracks, *subtitle_tracks], key=lambda track: track.index
+        )
+    ]
+    desired_order = [
+        track.index
+        for track in [
+            *sorted(video_tracks, key=lambda track: track.index),
+            *audio_tracks,
+            *subtitle_tracks,
+        ]
+    ]
+    return desired_order if desired_order != current_order else None
+
+
 def extract_tracks(
     file_path: Path, scorer: Config | Database | None = None
 ) -> tuple[list[Track], list[Track], list[Track]]:
@@ -480,6 +558,7 @@ def restore_tracks(
 
 def process_tracks(
     file_path: Path,
+    video_tracks: list[Track],
     audio_tracks: list[Track],
     subtitle_tracks: list[Track],
     config: Config,
@@ -561,6 +640,27 @@ def process_tracks(
             except subprocess.CalledProcessError as e:
                 mkvpropedit_logger.error((e.stderr or e.stdout or str(e)).strip())
                 return
+    track_order = get_track_order(video_tracks, audio_tracks, subtitle_tracks)
+    if config.remux_reorder_tracks and track_order is None:
+        mkvpriority_logger.info(
+            ('[DRY RUN] ' if dry_run else '') + 'skipping track reordering; track order unchanged'
+        )
+
+    tracks_modified = len(modify_args) > 1
+    disable_compression = config.remux_disable_compression and (
+        tracks_modified or (config.remux_reorder_tracks and track_order is not None)
+    )
+    reorder_tracks = track_order if config.remux_reorder_tracks else None
+    if disable_compression or reorder_tracks:
+        try:
+            remux_file(file_path, disable_compression, reorder_tracks, dry_run)
+        except subprocess.CalledProcessError:
+            return
+    elif config.remux_disable_compression and not tracks_modified:
+        mkvpriority_logger.info(
+            ('[DRY RUN] ' if dry_run else '') + 'skipping remux; no track flags changed'
+        )
+
     if database is not None:
         database.insert(file_path, list(orig_tracks.values()))
 
@@ -582,7 +682,9 @@ def process_file(
     video_tracks, audio_tracks, subtitle_tracks = extract_tracks(file_path, config)
     for tracks in (audio_tracks, subtitle_tracks):
         tracks.sort(reverse=True, key=lambda track: track.score)
-    process_tracks(file_path, audio_tracks, subtitle_tracks, config, database, dry_run)
+    process_tracks(
+        file_path, video_tracks, audio_tracks, subtitle_tracks, config, database, dry_run
+    )
     if extensions is not None:
         for extension in extensions:
             extension.process_file(
@@ -683,8 +785,13 @@ def main(argv: list[str] | None = None, orig_lang: str | None = None) -> None:
                 file_mtime = file_path.stat().st_mtime
                 is_archived = database.contains(file_path, file_mtime)
                 if not args.restore and is_archived:
-                    mkvpriority_logger.info(dry_run + f"skipping (archived) '{file_path}'")
-                    continue
+                    if active_config.remux_reorder_tracks:
+                        mkvpriority_logger.info(
+                            dry_run + f"checking archived file for track order '{file_path}'"
+                        )
+                    else:
+                        mkvpriority_logger.info(dry_run + f"skipping (archived) '{file_path}'")
+                        continue
                 if args.restore and not is_archived:
                     mkvpriority_logger.info(dry_run + f"skipping (not archived) '{file_path}'")
                     continue

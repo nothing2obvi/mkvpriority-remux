@@ -14,8 +14,8 @@ services:
     restart: unless-stopped
 
   mkvpriority:
-    image: ghcr.io/kennethsible/mkvpriority
-    container_name: mkvpriority
+    image: ghcr.io/nothing2obvi/mkvpriority-remux
+    container_name: mkvpriority-remux
     user: ${PUID:-1000}:${PGID:-1000}
     environment:
       WEBHOOK_PORT: "8080"
@@ -23,7 +23,7 @@ services:
         --archive /config/archive.db
       # TZ: "America/New_York"
       # CRON_SCHEDULE: "0 0 * * *"
-      # CRON_TARGET_PATH: /media
+      # CRON_TARGET_PATHS: /media
     volumes:
       - /path/to/media:/media # <-- same mount point
       - /path/to/mkvpriority/config:/config

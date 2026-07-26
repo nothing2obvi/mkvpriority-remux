@@ -226,6 +226,18 @@ def multiplex_dummy(output_path: Path, track_files: dict[str, Path]) -> None:
     )
 
 
+def track_summary(file_path: Path) -> list[tuple[str, str, str]]:
+    track_data = mkvpriority.identify_tracks(file_path)
+    return [
+        (
+            track['type'],
+            track['properties'].get('track_name'),
+            track['properties'].get('language', 'und'),
+        )
+        for track in track_data['tracks']
+    ]
+
+
 def test_mkvpropedit() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -413,6 +425,110 @@ def test_restore() -> None:
             assert len(tracks := video_tracks + audio_tracks + subtitle_tracks) == 8
             assert {track.name for track in tracks if track.default} == {'Stereo AAC (English)'}
             assert {track.name for track in tracks if track.forced} == {'Signs & Songs [FanSub]'}
+
+
+def test_remux_restore_and_archive() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        file_path = temp_path / 'dummy.mkv'
+        track_files = create_dummy(temp_path)
+        multiplex_dummy(file_path, track_files)
+
+        with tempfile.NamedTemporaryFile() as archive_file:
+            config = mkvpriority.Config.from_file(Path('config.toml'))
+            config.remux_disable_compression = True
+            config.remux_reorder_tracks = True
+            database = mkvpriority.Database(archive_file.name)
+            mkvpriority.process_file(file_path, config, database)
+
+            assert database.contains(file_path, file_path.stat().st_mtime)
+
+            video_tracks, audio_tracks, subtitle_tracks = mkvpriority.extract_tracks(file_path)
+            assert len(tracks := video_tracks + audio_tracks + subtitle_tracks) == 8
+            assert {track.name for track in tracks if track.default} == {
+                '5.1 FLAC (Japanese)',
+                'Full Subtitles [FanSub]',
+            }
+            assert {track.name for track in tracks if track.forced} == {'Full Subtitles [FanSub]'}
+
+            mkvpriority.restore_file(file_path, database)
+
+            video_tracks, audio_tracks, subtitle_tracks = mkvpriority.extract_tracks(file_path)
+            assert len(tracks := video_tracks + audio_tracks + subtitle_tracks) == 8
+            assert {track.name for track in tracks if track.default} == {'Stereo AAC (English)'}
+            assert {track.name for track in tracks if track.forced} == {'Signs & Songs [FanSub]'}
+
+
+def test_remux_skips_when_no_flags_change() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        file_path = temp_path / 'dummy.mkv'
+        track_files = create_dummy(temp_path)
+        multiplex_dummy(file_path, track_files)
+
+        config = mkvpriority.Config.from_file(Path('config.toml'))
+        config.remux_disable_compression = True
+        mkvpriority.process_file(file_path, config)
+        mtime_ns = file_path.stat().st_mtime_ns
+
+        mkvpriority.process_file(file_path, config)
+
+        assert file_path.stat().st_mtime_ns == mtime_ns
+
+
+def test_remux_reorders_tracks() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        file_path = temp_path / 'dummy.mkv'
+        track_files = create_dummy(temp_path)
+        multiplex_dummy(file_path, track_files)
+
+        config = mkvpriority.Config.from_file(Path('config.toml'))
+        config.remux_reorder_tracks = True
+        mkvpriority.process_file(file_path, config)
+
+        assert track_summary(file_path) == [
+            ('video', 'Dummy Video', 'und'),
+            ('audio', '5.1 FLAC (Japanese)', 'jpn'),
+            ('audio', 'Stereo AAC (Japanese)', 'jpn'),
+            ('audio', 'Stereo AAC (English)', 'eng'),
+            ('subtitles', 'Full Subtitles [FanSub]', 'eng'),
+            ('subtitles', 'Dialogue [Blu-ray]', 'eng'),
+            ('subtitles', 'Signs & Songs [FanSub]', 'eng'),
+            ('subtitles', 'Dialogue [Blu-ray]', 'ger'),
+        ]
+        mtime_ns = file_path.stat().st_mtime_ns
+
+        mkvpriority.process_file(file_path, config)
+
+        assert file_path.stat().st_mtime_ns == mtime_ns
+
+
+def test_remux_reorders_archived_file_with_no_flag_changes() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        file_path = temp_path / 'dummy.mkv'
+        config_path = temp_path / 'config.toml'
+        track_files = create_dummy(temp_path)
+        multiplex_dummy(file_path, track_files)
+        config_path.write_text(
+            Path('config.toml')
+            .read_text(encoding='utf-8')
+            .replace('remux_reorder_tracks = false', 'remux_reorder_tracks = true'),
+            encoding='utf-8',
+        )
+
+        with tempfile.NamedTemporaryFile() as archive_file:
+            config = mkvpriority.Config.from_file(Path('config.toml'))
+            database = mkvpriority.Database(archive_file.name)
+            mkvpriority.process_file(file_path, config, database)
+
+            assert database.contains(file_path, file_path.stat().st_mtime)
+            assert track_summary(file_path)[1] == ('audio', 'Stereo AAC (Japanese)', 'jpn')
+
+            mkvpriority.main.main(['-c', str(config_path), '-a', archive_file.name, str(file_path)])
+
+            assert track_summary(file_path)[1] == ('audio', '5.1 FLAC (Japanese)', 'jpn')
 
 
 def test_prune() -> None:

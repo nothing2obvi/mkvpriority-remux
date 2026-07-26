@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CONTAINER_NAME='mkvpriority' # <-- change if you use a different name
+CONTAINER_NAME='mkvpriority-remux' # <-- change if you use a different name
 FILE_PATH="${sonarr_episodefile_path:-${radarr_moviefile_path}}"
 
 [ -z "$FILE_PATH" ] && exit 0

@@ -1,6 +1,6 @@
 [project]
 name = "mkvpriority"
-version = "1.5.1"
+version = "1.5.1.post1"
 description = "Automatically Prioritize Audio/Subtitle Tracks in MKV Files"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -49,10 +49,10 @@ dev = [
 ]
 
 [project.urls]
-homepage = "https://github.com/kennethsible/mkvpriority"
-source = "https://github.com/kennethsible/mkvpriority"
-issues = "https://github.com/kennethsible/mkvpriority/issues"
-changelog = "https://github.com/kennethsible/mkvpriority/releases"
+homepage = "https://github.com/nothing2obvi/mkvpriority-remux"
+source = "https://github.com/nothing2obvi/mkvpriority-remux"
+issues = "https://github.com/nothing2obvi/mkvpriority-remux/issues"
+changelog = "https://github.com/nothing2obvi/mkvpriority-remux/releases"
 
 [project.scripts]
 mkvpriority = "mkvpriority.main:main"
